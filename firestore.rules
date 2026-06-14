@@ -1,0 +1,31 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/notes/{noteId} {
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      // Clients may only create/update the raw note; AI metadata
+      // (category, tags, embedding) is written by Cloud Functions (Admin SDK
+      // bypasses rules), so block clients from forging it.
+      allow create: if request.auth != null && request.auth.uid == userId
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 10000
+        && request.resource.data.status == 'pending';
+      allow update: if request.auth != null && request.auth.uid == userId
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 10000
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['text', 'status'])
+        && request.resource.data.status == 'pending';
+    }
+    match /users/{userId}/categories/{categoryId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      // Written only by Cloud Functions.
+      allow write: if false;
+    }
+    match /users/{userId}/conversations/{convId} {
+      allow read, write, delete: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}
