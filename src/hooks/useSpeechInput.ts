@@ -100,18 +100,58 @@ export function useSpeechInput({ onFinal, onPartial }: UseSpeechInputOptions): U
     recognition.interimResults = true
     recognition.maxAlternatives = 1
 
+    // Some engines (notably Android Chrome / mobile) re-report already-finalized
+    // text. They may return one growing cumulative transcript for the current
+    // utterance ("hello" then later "hello world" in a later result) or multiple
+    // final results where later ones contain prior words. We track the best
+    // (longest) final transcript seen, compute the delta against what we have
+    // already emitted to callers, and only emit new text. This prevents the
+    // "after each word it pastes the whole sentence again" duplication.
+    let finalSoFar = ''
+
     recognition.onresult = (event) => {
       let interim = ''
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      let bestFinal = ''
+
+      // The longest final transcript in the results is typically the engine's
+      // most complete cumulative view. We do not += every result because later
+      // final entries often restate earlier text.
+      for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i]
-        const transcript = result[0]?.transcript ?? ''
+        const transcript = result[0]?.transcript?.trim() ?? ''
+        if (!transcript) continue
+
         if (result.isFinal) {
-          const finalText = transcript.trim()
-          if (finalText) onFinalRef.current(finalText)
+          if (transcript.length > bestFinal.length) {
+            bestFinal = transcript
+          }
         } else {
-          interim += transcript
+          // Only the latest interim matters.
+          interim = transcript
         }
       }
+
+      if (bestFinal) {
+        if (bestFinal.startsWith(finalSoFar)) {
+          const delta = bestFinal.slice(finalSoFar.length).trim()
+          if (delta) {
+            finalSoFar = bestFinal
+            onFinalRef.current(delta)
+          }
+        } else {
+          // New utterance / correction / long pause: the transcript does not
+          // continue our prior final text. Emit the new chunk (so we don't
+          // silently drop speech) and resync.
+          const lower = (s: string) => s.toLowerCase().replace(/\s+/g, ' ')
+          if (!finalSoFar || !lower(bestFinal).includes(lower(finalSoFar))) {
+            finalSoFar = bestFinal
+            onFinalRef.current(bestFinal)
+          } else {
+            finalSoFar = bestFinal
+          }
+        }
+      }
+
       setPartial(interim)
       onPartialRef.current?.(interim)
     }
