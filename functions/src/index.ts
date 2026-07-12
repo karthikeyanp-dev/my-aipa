@@ -1,11 +1,13 @@
+import './instrumentation.js'
 import { setGlobalOptions } from 'firebase-functions/v2'
 import { onDocumentWritten } from 'firebase-functions/v2/firestore'
 import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import { defineSecret } from 'firebase-functions/params'
 import * as logger from 'firebase-functions/logger'
-import { initializeApp } from 'firebase-admin/app'
-import { getFirestore, FieldValue } from 'firebase-admin/firestore'
+import { FieldValue } from 'firebase-admin/firestore'
 import { GoogleGenAI, Type } from '@google/genai'
+import { traceAIRequest } from './aiTracing.js'
+import { db } from './firebase.js'
 
 const GEMINI_API_KEY = defineSecret('GEMINI_API_KEY')
 
@@ -20,8 +22,6 @@ const EMBEDDING_DIM = 768
 
 // Same region as the Firestore database — avoids cross-region hops.
 setGlobalOptions({ region: 'asia-south1', maxInstances: 10 })
-initializeApp()
-const db = getFirestore()
 
 function genAI(): GoogleGenAI {
   return new GoogleGenAI({ apiKey: GEMINI_API_KEY.value() })
@@ -64,11 +64,13 @@ async function aiCall<T>(fn: () => Promise<T>): Promise<T> {
 
 async function embed(text: string, taskType: 'RETRIEVAL_DOCUMENT' | 'RETRIEVAL_QUERY') {
   const res = await withRetry(() =>
-    genAI().models.embedContent({
-      model: EMBEDDING_MODEL,
-      contents: text,
-      config: { taskType, outputDimensionality: EMBEDDING_DIM },
-    }),
+    traceAIRequest('embed-note', 'EMBEDDING', EMBEDDING_MODEL, () =>
+      genAI().models.embedContent({
+        model: EMBEDDING_MODEL,
+        contents: text,
+        config: { taskType, outputDimensionality: EMBEDDING_DIM },
+      }),
+    ),
   )
   const values = res.embeddings?.[0]?.values
   if (!values || values.length !== EMBEDDING_DIM) {
@@ -127,9 +129,10 @@ export const processNote = onDocumentWritten(
       .map((c) => c.name as string)
 
     const classification = await withRetry(() =>
-      genAI().models.generateContent({
-        model: CHAT_MODEL,
-        contents: `Classify this personal note.
+      traceAIRequest('classify-note', 'LLM', CHAT_MODEL, () =>
+        genAI().models.generateContent({
+          model: CHAT_MODEL,
+          contents: `Classify this personal note.
 
 Existing categories: ${existing.length ? JSON.stringify(existing) : '(none yet)'}
 
@@ -139,19 +142,20 @@ Rules:
 - Also produce 2-4 short lowercase tags (single words or hyphenated).
 
 Note: """${text}"""`,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              category: { type: Type.STRING },
-              isNewCategory: { type: Type.BOOLEAN },
-              tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                category: { type: Type.STRING },
+                isNewCategory: { type: Type.BOOLEAN },
+                tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+              },
+              required: ['category', 'isNewCategory', 'tags'],
             },
-            required: ['category', 'isNewCategory', 'tags'],
           },
-        },
-      }),
+        }),
+      ),
     )
 
     let category = 'General'
@@ -264,20 +268,22 @@ export const askNotes = onCall(
 
     const completion = await aiCall(() =>
       withRetry(() =>
-        genAI().models.generateContent({
-          model: CHAT_MODEL,
-          contents: `Notes:\n${context}${historyBlock}\n\nQuestion: ${question}`,
-          config: {
-            systemInstruction: `You answer questions using ONLY the user's own notes provided below.
+        traceAIRequest('answer-notes-question', 'LLM', CHAT_MODEL, () =>
+          genAI().models.generateContent({
+            model: CHAT_MODEL,
+            contents: `Notes:\n${context}${historyBlock}\n\nQuestion: ${question}`,
+            config: {
+              systemInstruction: `You answer questions using ONLY the user's own notes provided below.
 Rules:
 - Answer concisely in plain text (no markdown formatting).
 - Cite the notes you used inline like [1] or [2].
 - Never invent information. If the notes don't contain the answer, reply exactly: "I couldn't find a note about this."
 - A confidently wrong answer is worse than no answer.
 - If previous conversation context is provided, use it to understand follow-up questions and give more relevant answers.`,
-            temperature: 0.2,
-          },
-        }),
+              temperature: 0.2,
+            },
+          }),
+        ),
       ),
     )
 
@@ -327,16 +333,18 @@ export const transcribeAudio = onCall(
 
     const completion = await aiCall(() =>
       withRetry(() =>
-        genAI().models.generateContent({
-          model: CHAT_MODEL,
-          contents: [
-            { inlineData: { mimeType, data: audioBase64 } },
-            {
-              text: 'Transcribe this audio verbatim. Detect the spoken language automatically. Return only the transcript text, with no commentary, labels or quotation marks. If there is no discernible speech, return an empty string.',
-            },
-          ],
-          config: { temperature: 0 },
-        }),
+        traceAIRequest('transcribe-audio', 'LLM', CHAT_MODEL, () =>
+          genAI().models.generateContent({
+            model: CHAT_MODEL,
+            contents: [
+              { inlineData: { mimeType, data: audioBase64 } },
+              {
+                text: 'Transcribe this audio verbatim. Detect the spoken language automatically. Return only the transcript text, with no commentary, labels or quotation marks. If there is no discernible speech, return an empty string.',
+              },
+            ],
+            config: { temperature: 0 },
+          }),
+        ),
       ),
     )
 
