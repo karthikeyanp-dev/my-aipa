@@ -126,9 +126,11 @@ export default function Ask() {
       const errorMsg: ChatMessage = {
         role: 'assistant',
         text:
-          code === 'functions/unavailable'
-            ? 'The AI service is busy right now. Give it a moment and try again.'
-            : "I couldn't reach your notes right now. Check your connection and try again.",
+          code === 'functions/resource-exhausted'
+            ? "You've hit the usage limit for now. Please try again later."
+            : code === 'functions/unavailable'
+              ? 'The AI service is busy right now. Give it a moment and try again.'
+              : "I couldn't reach your notes right now. Check your connection and try again.",
         error: true,
       }
       await appendMessage(convId!, errorMsg)

@@ -18,10 +18,55 @@ const CHAT_MODEL = 'gemini-flash-lite-latest'
 const EMBEDDING_MODEL = 'gemini-embedding-001'
 const EMBEDDING_DIM = 768
 
+// Per-user rate limits (beta defaults — tune freely). These guard AI cost and
+// abuse: callables cap requests-per-hour; the note trigger caps AI processing
+// per day. Fixed-window, so a boundary may briefly allow up to ~2x the limit.
+const HOUR_MS = 60 * 60 * 1000
+const DAY_MS = 24 * HOUR_MS
+const ASK_LIMIT = 60 // askNotes calls per hour
+const TRANSCRIBE_LIMIT = 60 // transcribeAudio calls per hour
+const PROCESS_LIMIT = 200 // notes AI-processed per day
+// Reject oversized audio uploads before they reach Gemini (~6MB of audio;
+// comfortably above the client's 45s clip).
+const MAX_AUDIO_BASE64 = 8_000_000
+
 // Same region as the Firestore database — avoids cross-region hops.
 setGlobalOptions({ region: 'asia-south1', maxInstances: 10 })
 initializeApp()
 const db = getFirestore()
+
+// Dependency-free per-user fixed-window limiter. Counts live in a document the
+// client can't touch (no matching Firestore rule => default-deny; Admin SDK
+// here bypasses rules). Returns whether the call is allowed so callers can
+// throw a typed HttpsError outside the transaction (keeps retries safe).
+async function isWithinRateLimit(
+  uid: string,
+  key: string,
+  limit: number,
+  windowMs: number,
+): Promise<boolean> {
+  const ref = db.doc(`users/${uid}/limits/${key}`)
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref)
+    const now = Date.now()
+    const data = snap.data()
+    const windowStart = (data?.windowStart as number | undefined) ?? 0
+    if (!data || now - windowStart >= windowMs) {
+      tx.set(ref, { windowStart: now, count: 1 })
+      return true
+    }
+    if (((data.count as number | undefined) ?? 0) >= limit) return false
+    tx.update(ref, { count: FieldValue.increment(1) })
+    return true
+  })
+}
+
+// Throwing variant for callables.
+async function enforceRateLimit(uid: string, key: string, limit: number, windowMs: number) {
+  if (!(await isWithinRateLimit(uid, key, limit, windowMs))) {
+    throw new HttpsError('resource-exhausted', "You've hit the usage limit for now. Please try again later.")
+  }
+}
 
 function genAI(): GoogleGenAI {
   return new GoogleGenAI({ apiKey: GEMINI_API_KEY.value() })
@@ -118,6 +163,23 @@ export const processNote = onDocumentWritten(
     const text = String(note.text ?? '').trim()
     if (!text) return
 
+    // Cap AI processing per user per day. When exceeded, finalize the note
+    // without AI enrichment (no embedding, so it won't surface in vector
+    // search) rather than leaving it stuck "pending" forever.
+    if (!(await isWithinRateLimit(uid, 'process', PROCESS_LIMIT, DAY_MS))) {
+      logger.warn(`Daily note-processing limit reached for ${uid}; skipping AI`, {
+        noteId: event.params.noteId,
+      })
+      await after.ref.update({
+        category: 'General',
+        tags: [],
+        status: 'processed',
+        rateLimited: true,
+        processedAt: FieldValue.serverTimestamp(),
+      })
+      return
+    }
+
     // Feed existing categories into the prompt — the key trick that prevents
     // "Fuel", "Petrol" and "Gas Cards" sprawling into separate categories.
     const catSnap = await db.collection(`users/${uid}/categories`).get()
@@ -205,10 +267,12 @@ interface Source {
  * Firestore findNearest, answer ONLY from those notes with citations.
  */
 export const askNotes = onCall(
-  { secrets: [GEMINI_API_KEY] },
+  { secrets: [GEMINI_API_KEY], enforceAppCheck: true },
   async (request): Promise<{ answer: string; sources: Source[] }> => {
     const uid = request.auth?.uid
     if (!uid) throw new HttpsError('unauthenticated', 'Sign in to ask your notes.')
+
+    await enforceRateLimit(uid, 'ask', ASK_LIMIT, HOUR_MS)
 
     const question = String(request.data?.question ?? '').trim().slice(0, 2000)
     if (!question) throw new HttpsError('invalid-argument', 'Question is required.')
@@ -314,15 +378,20 @@ Rules:
  * transcribes it verbatim, auto-detecting the spoken language.
  */
 export const transcribeAudio = onCall(
-  { secrets: [GEMINI_API_KEY] },
+  { secrets: [GEMINI_API_KEY], enforceAppCheck: true },
   async (request): Promise<{ text: string }> => {
     const uid = request.auth?.uid
     if (!uid) throw new HttpsError('unauthenticated', 'Sign in to use voice input.')
+
+    await enforceRateLimit(uid, 'transcribe', TRANSCRIBE_LIMIT, HOUR_MS)
 
     const audioBase64 = String(request.data?.audioBase64 ?? '')
     const mimeType = String(request.data?.mimeType ?? '')
     if (!audioBase64 || !mimeType) {
       throw new HttpsError('invalid-argument', 'Audio is required.')
+    }
+    if (audioBase64.length > MAX_AUDIO_BASE64) {
+      throw new HttpsError('invalid-argument', 'Audio clip is too large.')
     }
 
     const completion = await aiCall(() =>
