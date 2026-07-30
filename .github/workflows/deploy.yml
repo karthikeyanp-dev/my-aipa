@@ -4,6 +4,7 @@ name: Deploy to Firebase
 #   - Hosting (built Vite PWA from ./dist)
 #   - Cloud Functions (2nd gen, Node 22)
 #   - Firestore (security rules + vector index)
+#   - Storage (security rules)
 #
 # Required GitHub repository secrets (see README > Continuous Deployment):
 #   FIREBASE_SERVICE_ACCOUNT_MYAIPA2026   Google service account JSON (auth)
@@ -33,7 +34,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Build & deploy (hosting + functions + firestore)
+    name: Build & deploy (hosting + functions + firestore + storage)
     runs-on: ubuntu-latest
     env:
       # Surface as job-level env so the `firebase deploy` predeploy hooks
@@ -80,7 +81,7 @@ jobs:
         run: npm install -g firebase-tools
 
       - name: Deploy to Firebase
-        run: firebase deploy --only hosting,functions,firestore --non-interactive
+        run: firebase deploy --only hosting,functions,firestore,storage --non-interactive
 
       - name: Print hosting URL
         run: |
