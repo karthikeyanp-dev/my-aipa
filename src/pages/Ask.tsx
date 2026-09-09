@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { httpsCallable } from 'firebase/functions'
-import { ArrowUp, Sparkles, History, Plus, Trash2, X } from 'lucide-react'
+import { ArrowUp, Sparkles, History, Plus, Search, Trash2, X } from 'lucide-react'
 import { functions } from '../lib/firebase'
 import { cn, timeAgo } from '../lib/utils'
 import type { ChatMessage, ChatSource } from '../lib/types'
@@ -67,11 +67,24 @@ export default function Ask() {
   } = useConversations()
 
   const [input, setInput] = useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
   const [busy, setBusy] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  const [historyQuery, setHistoryQuery] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
 
   const messages = activeConversation?.messages ?? []
+  const matchingConversations = useMemo(() => {
+    const query = historyQuery.trim().toLowerCase()
+    return query ? conversations.filter((conversation) => conversation.title.toLowerCase().includes(query)) : conversations
+  }, [conversations, historyQuery])
+
+  useEffect(() => {
+    const prompt = searchParams.get('prompt')
+    if (!prompt) return
+    setInput(prompt)
+    setSearchParams({}, { replace: true })
+  }, [searchParams, setSearchParams])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -113,9 +126,11 @@ export default function Ask() {
       const errorMsg: ChatMessage = {
         role: 'assistant',
         text:
-          code === 'functions/unavailable'
-            ? 'The AI service is busy right now. Give it a moment and try again.'
-            : "I couldn't reach your notes right now. Check your connection and try again.",
+          code === 'functions/resource-exhausted'
+            ? "You've hit the usage limit for now. Please try again later."
+            : code === 'functions/unavailable'
+              ? 'The AI service is busy right now. Give it a moment and try again.'
+              : "I couldn't reach your notes right now. Check your connection and try again.",
         error: true,
       }
       await appendMessage(convId!, errorMsg)
@@ -126,11 +141,13 @@ export default function Ask() {
 
   function startNewChat() {
     setActiveConversation(null)
+    setHistoryQuery('')
     setShowHistory(false)
   }
 
   async function handleSelectConversation(id: string) {
     await loadConversation(id)
+    setHistoryQuery('')
     setShowHistory(false)
   }
 
@@ -172,7 +189,16 @@ export default function Ask() {
               <Plus size={16} />
               New chat
             </button>
-            {conversations.map((c) => (
+            <label className="relative mt-1 block">
+              <Search size={15} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-zinc-400 dark:text-zinc-500" />
+              <input
+                value={historyQuery}
+                onChange={(event) => setHistoryQuery(event.target.value)}
+                placeholder="Search chats…"
+                className="w-full rounded-xl border border-zinc-200 bg-white py-2 pr-3 pl-9 text-sm outline-none focus:border-accent-400 dark:border-white/10 dark:bg-zinc-900"
+              />
+            </label>
+            {matchingConversations.map((c) => (
               <button
                 key={c.id}
                 onClick={() => handleSelectConversation(c.id)}
@@ -194,8 +220,11 @@ export default function Ask() {
                 >
                   <Trash2 size={14} />
                 </button>
-              </button>
+                </button>
             ))}
+            {matchingConversations.length === 0 && (
+              <p className="px-3 py-4 text-center text-sm text-zinc-400 dark:text-zinc-500">No chats match that search.</p>
+            )}
           </div>
         </div>
       )}

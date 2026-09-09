@@ -9,6 +9,7 @@ import Home from './pages/Home'
 import Ask from './pages/Ask'
 import Settings from './pages/Settings'
 import Editor from './pages/Editor'
+import Tasks from './pages/Tasks'
 
 const router = createBrowserRouter([
   {
@@ -17,6 +18,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Home /> },
       { path: 'ask', element: <Ask /> },
+      { path: 'tasks', element: <Tasks /> },
       { path: 'settings', element: <Settings /> },
     ],
   },

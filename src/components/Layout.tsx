@@ -1,9 +1,10 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { Home, Sparkles, Settings } from 'lucide-react'
+import { Home, Sparkles, Settings, ListChecks, Plus } from 'lucide-react'
 import { cn } from '../lib/utils'
 
 const tabs = [
   { to: '/', label: 'Home', icon: Home },
+  { to: '/tasks', label: 'Tasks', icon: ListChecks },
   { to: '/ask', label: 'Ask', icon: Sparkles },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
@@ -40,11 +41,19 @@ export default function Layout() {
     <div className="flex min-h-dvh flex-col">
       {/* ── Desktop sidebar (lg+) ── */}
       <aside className="hidden lg:fixed lg:left-0 lg:top-0 lg:z-10 lg:flex lg:h-dvh lg:w-64 lg:flex-col lg:border-r lg:border-zinc-200/70 lg:bg-white/95 lg:dark:border-white/5 lg:dark:bg-[#13101c]/95">
-        <nav className="flex flex-col gap-1 p-4">
+        <div className="px-7 pt-7 pb-4">
+          <p className="text-xs font-bold tracking-[0.18em] text-accent-600 dark:text-accent-400">MY AIPA</p>
+          <p className="mt-1 text-sm text-zinc-400 dark:text-zinc-500">Your second brain</p>
+        </div>
+        <nav className="flex flex-col gap-1 px-4">
           {tabs.map((t) => (
             <NavItem key={t.to} {...t} desktop />
           ))}
         </nav>
+        <NavLink to="/note/new" className="mx-5 mt-5 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-accent-500 to-accent-700 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-accent-600/20 transition active:scale-[0.98]">
+          <Plus size={17} />
+          Capture a note
+        </NavLink>
       </aside>
 
       {/* ── Main content ── */}

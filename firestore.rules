@@ -27,5 +27,23 @@ service cloud.firestore {
     match /users/{userId}/conversations/{convId} {
       allow read, write, delete: if request.auth != null && request.auth.uid == userId;
     }
+    match /users/{userId}/tasks/{taskId} {
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null && request.auth.uid == userId
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.completed == false
+        && request.resource.data.createdAt is timestamp
+        && (!('dueAt' in request.resource.data) || request.resource.data.dueAt is timestamp);
+      allow update: if request.auth != null && request.auth.uid == userId
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.completed is bool
+        && (!('dueAt' in request.resource.data) || request.resource.data.dueAt is timestamp)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['title', 'completed', 'dueAt']);
+    }
   }
 }
